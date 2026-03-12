@@ -23,8 +23,9 @@ app.get('/stock/:ticker', async (req, res) => {
   }
 })
 
-app.get('*', (req, res) => {
+app.get('*splat', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'))
 })
+
 
 app.listen(process.env.PORT || 3000)
