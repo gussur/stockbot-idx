@@ -34,12 +34,17 @@ app.get('/stock/:ticker', async (req, res) => {
   const ticker = req.params.ticker.toUpperCase() + '.JK'
   try {
     const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
-    const [quote, chart] = await Promise.all([
-      yahooFinance.quote(ticker),
-      yahooFinance.chart(ticker, { period1: fiveDaysAgo, interval: '1d' })
-    ])
-    res.json({ quote, chart: chart.quotes })
+    const quote = await yahooFinance.quote(ticker)
+    let chart = []
+    try {
+      const chartData = await yahooFinance.chart(ticker, { period1: fiveDaysAgo, interval: '1d' })
+      chart = chartData.quotes
+    } catch (chartErr) {
+      console.error('Chart error:', chartErr.message)
+    }
+    res.json({ quote, chart })
   } catch (e) {
+    console.error('Yahoo Finance error:', e.message)
     res.status(500).json({ error: e.message })
   }
 })
@@ -49,4 +54,5 @@ app.get('*splat', (req, res) => {
 })
 
 app.listen(process.env.PORT || 3000)
+
 
