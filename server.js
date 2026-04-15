@@ -3,18 +3,10 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import YahooFinance from 'yahoo-finance2'
 
-// Tambahkan ini untuk memberi tahu Yahoo kalau kita bukan robot jahat
-YahooFinance.setGlobalConfig({
-    queue: {
-        concurrency: 1, // Jangan terlalu cepat ambil datanya
-    },
-    // Meniru identitas browser (User-Agent)
-    fetchOptions: {
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-    }
-});
+import dns from 'dns'
+dns.setDefaultResultOrder('ipv4first')
+
+const __filename = fileURLToPath(import.meta.url)
 
 const app = express()
 const __dirname = dirname(fileURLToPath(import.meta.url))
