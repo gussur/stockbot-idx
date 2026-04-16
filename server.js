@@ -75,8 +75,8 @@ app.get('/stock/:ticker', async (req, res) => {
   }
 })
 
-// Wildcard untuk routing Vite/SPA (pakai '*' standar Express)
-app.get('*', (req, res) => {
+// Wildcard untuk routing Vite/SPA
+app.get('*splat', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'))
 })
 
