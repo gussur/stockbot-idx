@@ -6,87 +6,85 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const app = express()
 
-// WAJIB ADA: Biar Express bisa baca pesan (body) yang dikirim dari React ke AI
 app.use(express.json())
 app.use(express.static(join(__dirname, 'dist')))
 
 // ==========================================
-// 1. ENDPOINT SAHAM (FINNHUB API)
+// 1. ENDPOINT SAHAM (BYPASS YAHOO FINANCE)
 // ==========================================
 app.get('/stock/:ticker', async (req, res) => {
   try {
     const rawTicker = req.params.ticker.toUpperCase();
     const symbol = `${rawTicker}.JK`;
-    const apiKey = process.env.FINNHUB_API_KEY;
 
-    if (!apiKey) return res.status(500).json({ error: 'API Key Finnhub belum dipasang!' });
+    // Target URL API resmi Yahoo Finance
+    const targetQuoteUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}`;
+    const targetChartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=7d&interval=1d`;
 
-    const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`;
-    const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${apiKey}`;
-    
-    const toDate = Math.floor(Date.now() / 1000);
-    const fromDate = toDate - (7 * 24 * 60 * 60); 
-    const chartUrl = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=D&from=${fromDate}&to=${toDate}&token=${apiKey}`;
-
-    const [quoteRes, profileRes, chartRes] = await Promise.all([
-      fetch(quoteUrl), fetch(profileUrl), fetch(chartUrl)
+    // Gunakan AllOrigins untuk membungkus request agar tidak diblokir Yahoo
+    const [quoteRes, chartRes] = await Promise.all([
+      fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetQuoteUrl)}`),
+      fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetChartUrl)}`)
     ]);
 
-    if (quoteRes.status === 429 || profileRes.status === 429 || chartRes.status === 429) {
-      return res.json({
-        quote: { symbol: symbol, longName: '⚠️ Kena Limit API Finnhub', price: 0, changePercent: 0, regularMarketPrice: 0 },
-        chart: []
-      });
+    const quoteJson = await quoteRes.json();
+    const chartJson = await chartRes.json();
+
+    const quoteData = quoteJson.quoteResponse.result[0];
+    const chartResult = chartJson.chart.result[0];
+
+    if (!quoteData || !chartResult) {
+       return res.json({ error: 'Saham tidak ditemukan di Yahoo Finance' });
     }
 
-    const quoteData = await quoteRes.json();
-    const profileData = await profileRes.json();
-    const chartData = await chartRes.json();
-
-    const currentPrice = quoteData.c || 0;
-    const changePercent = quoteData.dp || 0;
-    const companyName = profileData.name || rawTicker; 
-
+    // Rapikan Data Harga Saat Ini
     const formattedQuote = {
-      symbol: symbol,
-      longName: companyName,
-      price: currentPrice,
-      change: quoteData.d || 0,
-      changePercent: changePercent,
-      regularMarketPrice: currentPrice,
-      regularMarketChangePercent: changePercent
+      symbol: quoteData.symbol,
+      longName: quoteData.longName || quoteData.shortName || rawTicker,
+      price: quoteData.regularMarketPrice,
+      change: quoteData.regularMarketChange,
+      changePercent: quoteData.regularMarketChangePercent,
+      regularMarketPrice: quoteData.regularMarketPrice,
+      regularMarketChangePercent: quoteData.regularMarketChangePercent
     };
 
+    // Rapikan Data Chart Historis
     let formattedChart = [];
-    if (chartData.s === 'ok') {
-      for (let i = 0; i < chartData.t.length; i++) {
-        formattedChart.push({
-          date: new Date(chartData.t[i] * 1000).toISOString().split('T')[0],
-          open: chartData.o[i], high: chartData.h[i], low: chartData.l[i], close: chartData.c[i], volume: chartData.v[i]
-        });
+    const timestamps = chartResult.timestamp;
+    const indicators = chartResult.indicators.quote[0];
+    
+    if (timestamps && indicators) {
+      for (let i = 0; i < timestamps.length; i++) {
+        // Abaikan data null (misal saat hari libur bursa)
+        if (indicators.open[i] !== null) { 
+          formattedChart.push({
+            date: new Date(timestamps[i] * 1000).toISOString().split('T')[0],
+            open: indicators.open[i],
+            high: indicators.high[i],
+            low: indicators.low[i],
+            close: indicators.close[i],
+            volume: indicators.volume[i]
+          });
+        }
       }
-      formattedChart = formattedChart.slice(-5);
+      formattedChart = formattedChart.slice(-5); // Ambil 5 hari bursa terakhir
     }
 
     res.json({ quote: formattedQuote, chart: formattedChart });
   } catch (e) {
-    console.error('Error Finnhub:', e);
+    console.error('Error Ambil Data:', e);
     res.status(500).json({ error: 'Gagal mengambil data saham.' });
   }
 })
 
 // ==========================================
-// 2. ENDPOINT AI (ANTHROPIC PROXY)
+// 2. ENDPOINT AI (ANTHROPIC PROXY) - TETAP AMAN
 // ==========================================
 app.post('/api/v1/messages', async (req, res) => {
   try {
     const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-    
-    if (!anthropicApiKey) {
-      return res.status(500).json({ error: 'API Key Anthropic belum dipasang di Render!' });
-    }
+    if (!anthropicApiKey) return res.status(500).json({ error: 'API Key Anthropic belum dipasang!' });
 
-    // Teruskan request dari frontend langsung ke Anthropic
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -94,27 +92,20 @@ app.post('/api/v1/messages', async (req, res) => {
         'x-api-key': anthropicApiKey,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify(req.body) // Kirim riwayat chat ke AI
+      body: JSON.stringify(req.body)
     });
 
     const data = await response.json();
-    
-    // Kembalikan jawaban AI ke frontend
     res.status(response.status).json(data);
-
   } catch (e) {
-    console.error('Error Anthropic API:', e);
     res.status(500).json({ error: 'Gagal menghubungi server AI.' });
   }
 })
 
-// ==========================================
-// 3. WILDCARD VITE / REACT
-// ==========================================
 app.get('*splat', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'))
 })
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log('Server Saham & AI Proxy Online! Perjuangan $5 Selesai! 🚀')
+  console.log('Server Saham Yahoo Proxy & AI Online! Selesai sudah penderitaan ini! 🚀')
 })
