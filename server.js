@@ -10,52 +10,70 @@ app.use(express.json())
 app.use(express.static(join(__dirname, 'dist')))
 
 // ==========================================
-// 1. ENDPOINT SAHAM (BYPASS YAHOO FINANCE)
+// SHIELD ANTI-CRASH: Biar Frontend Gak Pernah Layar Putih
+// ==========================================
+const createSafeFallback = (ticker, errorMsg) => ({
+  quote: {
+    symbol: ticker,
+    longName: errorMsg, // Pesan error akan muncul di tempat nama perusahaan
+    price: 0,
+    change: 0,
+    changePercent: 0,
+    regularMarketPrice: 0,
+    regularMarketChangePercent: 0
+  },
+  chart: []
+});
+
+// ==========================================
+// 1. ENDPOINT SAHAM (PROXY CODETABS -> YAHOO)
 // ==========================================
 app.get('/stock/:ticker', async (req, res) => {
-  try {
-    const rawTicker = req.params.ticker.toUpperCase();
-    const symbol = `${rawTicker}.JK`;
+  const rawTicker = req.params.ticker.toUpperCase();
+  const symbol = `${rawTicker}.JK`;
 
-    // Target URL API resmi Yahoo Finance
+  try {
     const targetQuoteUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}`;
     const targetChartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=7d&interval=1d`;
 
-    // Gunakan AllOrigins untuk membungkus request agar tidak diblokir Yahoo
+    // Ganti proxy ke CodeTabs (lebih ramah JSON)
     const [quoteRes, chartRes] = await Promise.all([
-      fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetQuoteUrl)}`),
-      fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetChartUrl)}`)
+      fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetQuoteUrl)}`),
+      fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetChartUrl)}`)
     ]);
+
+    // Kalau proxy gagal nembus Yahoo
+    if (!quoteRes.ok || !chartRes.ok) {
+       return res.json(createSafeFallback(symbol, '⚠️ Jalur ke Yahoo ditutup satpam.'));
+    }
 
     const quoteJson = await quoteRes.json();
     const chartJson = await chartRes.json();
 
-    const quoteData = quoteJson.quoteResponse.result[0];
-    const chartResult = chartJson.chart.result[0];
-
-    if (!quoteData || !chartResult) {
-       return res.json({ error: 'Saham tidak ditemukan di Yahoo Finance' });
+    // Validasi kalau Yahoo malah ngasih response aneh/kosong
+    if (!quoteJson.quoteResponse || !quoteJson.quoteResponse.result || quoteJson.quoteResponse.result.length === 0) {
+       return res.json(createSafeFallback(symbol, '⚠️ Data saham tidak ditemukan di Yahoo.'));
     }
 
-    // Rapikan Data Harga Saat Ini
+    const quoteData = quoteJson.quoteResponse.result[0];
+    const chartResult = chartJson.chart?.result?.[0] || {};
+
     const formattedQuote = {
       symbol: quoteData.symbol,
       longName: quoteData.longName || quoteData.shortName || rawTicker,
-      price: quoteData.regularMarketPrice,
-      change: quoteData.regularMarketChange,
-      changePercent: quoteData.regularMarketChangePercent,
-      regularMarketPrice: quoteData.regularMarketPrice,
-      regularMarketChangePercent: quoteData.regularMarketChangePercent
+      price: quoteData.regularMarketPrice || 0,
+      change: quoteData.regularMarketChange || 0,
+      changePercent: quoteData.regularMarketChangePercent || 0,
+      regularMarketPrice: quoteData.regularMarketPrice || 0,
+      regularMarketChangePercent: quoteData.regularMarketChangePercent || 0
     };
 
-    // Rapikan Data Chart Historis
     let formattedChart = [];
-    const timestamps = chartResult.timestamp;
-    const indicators = chartResult.indicators.quote[0];
-    
-    if (timestamps && indicators) {
+    if (chartResult.timestamp && chartResult.indicators?.quote?.[0]) {
+      const timestamps = chartResult.timestamp;
+      const indicators = chartResult.indicators.quote[0];
+      
       for (let i = 0; i < timestamps.length; i++) {
-        // Abaikan data null (misal saat hari libur bursa)
         if (indicators.open[i] !== null) { 
           formattedChart.push({
             date: new Date(timestamps[i] * 1000).toISOString().split('T')[0],
@@ -67,13 +85,15 @@ app.get('/stock/:ticker', async (req, res) => {
           });
         }
       }
-      formattedChart = formattedChart.slice(-5); // Ambil 5 hari bursa terakhir
+      formattedChart = formattedChart.slice(-5);
     }
 
     res.json({ quote: formattedQuote, chart: formattedChart });
   } catch (e) {
-    console.error('Error Ambil Data:', e);
-    res.status(500).json({ error: 'Gagal mengambil data saham.' });
+    console.error('Error Fetching:', e.message);
+    // KUNCI PERBAIKAN: Jangan pernah kirim res.status(500) lagi.
+    // Selalu kirim status 200 dengan format data palsu biar frontend tenang.
+    res.json(createSafeFallback(symbol, '⚠️ Server Yahoo lagi error/memblokir kita.'));
   }
 })
 
@@ -102,10 +122,13 @@ app.post('/api/v1/messages', async (req, res) => {
   }
 })
 
+// ==========================================
+// 3. WILDCARD VITE / REACT
+// ==========================================
 app.get('*splat', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'))
 })
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log('Server Saham Yahoo Proxy & AI Online! Selesai sudah penderitaan ini! 🚀')
+  console.log('Server Saham dengan Shield Anti-Crash Online! 🛡️🚀')
 })
