@@ -10,95 +10,109 @@ app.use(express.json())
 app.use(express.static(join(__dirname, 'dist')))
 
 // ==========================================
-// SHIELD ANTI-CRASH: Biar Frontend Gak Pernah Layar Putih
+// 🛡️ SISTEM CACHE (MEMORI SERVER)
 // ==========================================
-const createSafeFallback = (ticker, errorMsg) => ({
-  quote: {
-    symbol: ticker,
-    longName: errorMsg, // Pesan error akan muncul di tempat nama perusahaan
-    price: 0,
-    change: 0,
-    changePercent: 0,
-    regularMarketPrice: 0,
-    regularMarketChangePercent: 0
-  },
-  chart: []
-});
+const cache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 Menit (bisa diubah sesuai selera)
 
 // ==========================================
-// 1. ENDPOINT SAHAM (PROXY CODETABS -> YAHOO)
+// 1. ENDPOINT SAHAM (TRADINGVIEW API)
 // ==========================================
 app.get('/stock/:ticker', async (req, res) => {
   const rawTicker = req.params.ticker.toUpperCase();
-  const symbol = `${rawTicker}.JK`;
+  const symbol = `IDX:${rawTicker}`; // Format wajib TradingView untuk BEI
+
+  // 1. Cek Data di Cache (Biar nggak spam request ke TradingView)
+  if (cache.has(symbol)) {
+    const cachedData = cache.get(symbol);
+    if (Date.now() - cachedData.timestamp < CACHE_DURATION) {
+      console.log(`⚡ Mengambil data ${rawTicker} dari CACHE memori.`);
+      return res.json(cachedData.data); // Langsung kirim tanpa nembak API
+    }
+  }
 
   try {
-    const targetQuoteUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}`;
-    const targetChartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=7d&interval=1d`;
+    // 2. Tembak API Scanner TradingView (Super Stabil & Bebas Blokir)
+    console.log(`🌐 Mengambil data baru ${rawTicker} dari TRADINGVIEW.`);
+    const response = await fetch('https://scanner.tradingview.com/indonesia/scan', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' // Tiru browser asli
+      },
+      body: JSON.stringify({
+        symbols: { tickers: [symbol] },
+        columns: ["name", "description", "close", "change", "open", "high", "low", "volume"]
+      })
+    });
 
-    // Ganti proxy ke CodeTabs (lebih ramah JSON)
-    const [quoteRes, chartRes] = await Promise.all([
-      fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetQuoteUrl)}`),
-      fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetChartUrl)}`)
-    ]);
+    const tvData = await response.json();
 
-    // Kalau proxy gagal nembus Yahoo
-    if (!quoteRes.ok || !chartRes.ok) {
-       return res.json(createSafeFallback(symbol, '⚠️ Jalur ke Yahoo ditutup satpam.'));
+    // Kalau Ticker nggak ada di BEI
+    if (!tvData.data || tvData.data.length === 0) {
+      return res.json({
+        quote: { symbol: rawTicker, longName: `⚠️ Saham ${rawTicker} tidak ditemukan di BEI`, price: 0, changePercent: 0 },
+        chart: []
+      });
     }
 
-    const quoteJson = await quoteRes.json();
-    const chartJson = await chartRes.json();
+    // Ekstrak Array Data dari TradingView
+    const d = tvData.data[0].d;
+    const price = d[2];
+    const changePercent = d[3];
+    const open = d[4];
+    const high = d[5];
+    const low = d[6];
+    const volume = d[7];
+    
+    // TradingView cuma ngasih persentase, jadi kita hitung harga absolutnya secara manual
+    const previousClose = price / (1 + (changePercent / 100));
+    const changeAbs = price - previousClose;
 
-    // Validasi kalau Yahoo malah ngasih response aneh/kosong
-    if (!quoteJson.quoteResponse || !quoteJson.quoteResponse.result || quoteJson.quoteResponse.result.length === 0) {
-       return res.json(createSafeFallback(symbol, '⚠️ Data saham tidak ditemukan di Yahoo.'));
-    }
-
-    const quoteData = quoteJson.quoteResponse.result[0];
-    const chartResult = chartJson.chart?.result?.[0] || {};
-
+    // Rapikan untuk Frontend
     const formattedQuote = {
-      symbol: quoteData.symbol,
-      longName: quoteData.longName || quoteData.shortName || rawTicker,
-      price: quoteData.regularMarketPrice || 0,
-      change: quoteData.regularMarketChange || 0,
-      changePercent: quoteData.regularMarketChangePercent || 0,
-      regularMarketPrice: quoteData.regularMarketPrice || 0,
-      regularMarketChangePercent: quoteData.regularMarketChangePercent || 0
+      symbol: rawTicker,
+      longName: d[1] || rawTicker, // d[1] isinya nama perusahaan (misal: "Bank Central Asia Tbk")
+      price: price,
+      change: changeAbs,
+      changePercent: changePercent,
+      regularMarketPrice: price,
+      regularMarketChangePercent: changePercent
     };
 
-    let formattedChart = [];
-    if (chartResult.timestamp && chartResult.indicators?.quote?.[0]) {
-      const timestamps = chartResult.timestamp;
-      const indicators = chartResult.indicators.quote[0];
-      
-      for (let i = 0; i < timestamps.length; i++) {
-        if (indicators.open[i] !== null) { 
-          formattedChart.push({
-            date: new Date(timestamps[i] * 1000).toISOString().split('T')[0],
-            open: indicators.open[i],
-            high: indicators.high[i],
-            low: indicators.low[i],
-            close: indicators.close[i],
-            volume: indicators.volume[i]
-          });
-        }
-      }
-      formattedChart = formattedChart.slice(-5);
-    }
+    // TradingView Scanner ngasih data hari ini (Current Day). 
+    // Kita buat 1 candle solid agar AI dan frontend tetap bisa bekerja.
+    const today = new Date().toISOString().split('T')[0];
+    const formattedChart = [{
+      date: today,
+      open: open,
+      high: high,
+      low: low,
+      close: price,
+      volume: volume
+    }];
 
-    res.json({ quote: formattedQuote, chart: formattedChart });
+    const finalData = { quote: formattedQuote, chart: formattedChart };
+
+    // 3. Simpan data baru ke Cache
+    cache.set(symbol, {
+      timestamp: Date.now(),
+      data: finalData
+    });
+
+    res.json(finalData);
+
   } catch (e) {
-    console.error('Error Fetching:', e.message);
-    // KUNCI PERBAIKAN: Jangan pernah kirim res.status(500) lagi.
-    // Selalu kirim status 200 dengan format data palsu biar frontend tenang.
-    res.json(createSafeFallback(symbol, '⚠️ Server Yahoo lagi error/memblokir kita.'));
+    console.error('Error TradingView:', e.message);
+    res.json({
+      quote: { symbol: rawTicker, longName: '⚠️ Gagal terhubung ke server pasar saham.', price: 0, changePercent: 0 },
+      chart: []
+    });
   }
 })
 
 // ==========================================
-// 2. ENDPOINT AI (ANTHROPIC PROXY) - TETAP AMAN
+// 2. ENDPOINT AI (ANTHROPIC PROXY)
 // ==========================================
 app.post('/api/v1/messages', async (req, res) => {
   try {
@@ -122,13 +136,10 @@ app.post('/api/v1/messages', async (req, res) => {
   }
 })
 
-// ==========================================
-// 3. WILDCARD VITE / REACT
-// ==========================================
 app.get('*splat', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'))
 })
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log('Server Saham dengan Shield Anti-Crash Online! 🛡️🚀')
+  console.log('🚀 Final Build Online: TradingView API + Sistem Cache Aktif!');
 })
