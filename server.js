@@ -10,76 +10,97 @@ app.use(express.static(join(__dirname, 'dist')))
 
 app.get('/stock/:ticker', async (req, res) => {
   try {
-    // 1. Format ticker ke .JAK untuk Alpha Vantage
-    const ticker = req.params.ticker.toUpperCase();
-    const symbol = `${ticker}.JAK`;
-    const apiKey = process.env.ALPHA_VANTAGE_KEY;
+    // 1. Setup ticker pakai .JK untuk Finnhub (sama kayak Yahoo)
+    const rawTicker = req.params.ticker.toUpperCase();
+    const symbol = `${rawTicker}.JK`;
+    const apiKey = process.env.FINNHUB_API_KEY;
 
     if (!apiKey) {
-      return res.status(500).json({ error: 'API Key Alpha Vantage belum dipasang di environment Render!' });
+      return res.status(500).json({ error: 'API Key Finnhub belum dipasang!' });
     }
 
-    // 2. Siapkan URL untuk Quote (Harga Saat Ini) dan Chart (Data Harian)
-    const quoteUrl = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${apiKey}`;
-    const chartUrl = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${symbol}&apikey=${apiKey}`;
+    // 2. Siapkan URL Finnhub (Quote: Harga saat ini, Profile: Nama Perusahaan, Candle: Chart Harian)
+    const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`;
+    const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${apiKey}`;
+    
+    // Setup waktu untuk Chart (ambil 7 hari terakhir dalam detik/UNIX timestamp)
+    const toDate = Math.floor(Date.now() / 1000);
+    const fromDate = toDate - (7 * 24 * 60 * 60); 
+    const chartUrl = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=D&from=${fromDate}&to=${toDate}&token=${apiKey}`;
 
-    // 3. Tarik kedua data secara bersamaan biar cepat
-    const [quoteRes, chartRes] = await Promise.all([
+    // 3. Tarik semua data berbarengan
+    const [quoteRes, profileRes, chartRes] = await Promise.all([
       fetch(quoteUrl),
+      fetch(profileUrl),
       fetch(chartUrl)
     ]);
 
-    const quoteData = await quoteRes.json();
-    const chartData = await chartRes.json();
-
-    // 4. Handle kalau kena limit 25 request/hari dari Alpha Vantage
-    if ((quoteData.Information && quoteData.Information.includes('rate limit')) ||
-        (chartData.Information && chartData.Information.includes('rate limit'))) {
-      return res.status(429).json({ error: 'Limit API Alpha Vantage habis (Maksimal 25 request/hari).' });
+    // 4. Handle Limit (Finnhub mengembalikan status 429 kalau kena limit 60/menit)
+    if (quoteRes.status === 429 || profileRes.status === 429 || chartRes.status === 429) {
+      return res.json({
+        quote: { 
+          symbol: symbol, 
+          longName: '⚠️ Kena Limit API (Tunggu 1 menit lagi)', 
+          price: 0, 
+          changePercent: 0,
+          regularMarketPrice: 0
+        },
+        chart: []
+      });
     }
 
-    // 5. Rapikan data Quote
-    const globalQuote = quoteData['Global Quote'] || {};
+    const quoteData = await quoteRes.json();
+    const profileData = await profileRes.json();
+    const chartData = await chartRes.json();
+
+    // 5. Rapikan Data Quote & Profile
+    const currentPrice = quoteData.c || 0;
+    const changePercent = quoteData.dp || 0;
+    // Kalau Finnhub nggak nemu nama panjangnya, fallback ke kodenya (misal: BBCA)
+    const companyName = profileData.name || rawTicker; 
+
     const formattedQuote = {
-      symbol: globalQuote['01. symbol'],
-      price: parseFloat(globalQuote['05. price']),
-      change: parseFloat(globalQuote['09. change']),
-      changePercent: globalQuote['10. change percent'],
-      // Tambahan variabel biar nggak error kalau frontend kamu nyari variabel bawaan Yahoo
-      regularMarketPrice: parseFloat(globalQuote['05. price']), 
-      regularMarketChangePercent: parseFloat(globalQuote['10. change percent'])
+      symbol: symbol,
+      longName: companyName, // Ini yang tadi bikin frontend kamu crash
+      price: currentPrice,
+      change: quoteData.d || 0,
+      changePercent: changePercent,
+      regularMarketPrice: currentPrice,
+      regularMarketChangePercent: changePercent
     };
 
-    // 6. Rapikan data Chart (Ambil 5 hari terakhir)
-    const timeSeries = chartData['Time Series (Daily)'] || {};
-    // Ambil 5 tanggal terbaru
-    const latest5Days = Object.keys(timeSeries).slice(0, 5); 
-    
-    const formattedChart = latest5Days.map(date => {
-      return {
-        date: date,
-        open: parseFloat(timeSeries[date]['1. open']),
-        high: parseFloat(timeSeries[date]['2. high']),
-        low: parseFloat(timeSeries[date]['3. low']),
-        close: parseFloat(timeSeries[date]['4. close']),
-        volume: parseInt(timeSeries[date]['5. volume'])
+    // 6. Rapikan Data Chart (Candle)
+    let formattedChart = [];
+    if (chartData.s === 'ok') {
+      // Loop untuk menyatukan array data dari Finnhub menjadi object
+      for (let i = 0; i < chartData.t.length; i++) {
+        formattedChart.push({
+          date: new Date(chartData.t[i] * 1000).toISOString().split('T')[0],
+          open: chartData.o[i],
+          high: chartData.h[i],
+          low: chartData.l[i],
+          close: chartData.c[i],
+          volume: chartData.v[i]
+        });
       }
-    }).reverse(); // Di-reverse agar urutan harinya dari terlama -> terbaru (standar chart)
+      // Ambil 5 hari paling akhir
+      formattedChart = formattedChart.slice(-5);
+    }
 
-    // 7. Kirim data ke Frontend
+    // 7. Lempar ke Frontend
     res.json({ quote: formattedQuote, chart: formattedChart });
 
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Gagal mengambil data dari server saham.' });
+    console.error('Error server:', e);
+    res.status(500).json({ error: 'Gagal mengambil data dari Finnhub.' });
   }
 })
 
-// Wildcard untuk routing Vite/SPA
+// Wildcard untuk routing Vite/SPA (pakai *splat biar nggak error kayak tadi)
 app.get('*splat', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'))
 })
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log('Server jalan tanpa bayang-bayang error Yahoo Finance 🚀');
+  console.log('Server Finnhub Online! Limit 60 request/menit 🚀');
 })
