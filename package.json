@@ -4,15 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-  "dev": "vite",
-  "build": "vite build",
-  "start": "node server.js"
-},
+    "dev": "vite",
+    "build": "vite build",
+    "start": "node server.js"
+  },
   "dependencies": {
     "express": "^5.2.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "yahoo-finance2": "^3.0.0"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",
