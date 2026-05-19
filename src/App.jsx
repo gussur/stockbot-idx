@@ -2,30 +2,31 @@ import { useState, useRef } from "react";
 
 const SYSTEM_PROMPT = `Kamu adalah analis saham profesional IDX (Bursa Efek Indonesia) yang spesialis intraday trading.
 
-Ketika diberikan kode saham IDX, lakukan web search untuk mendapatkan data terkini dan analisis:
+Kamu akan diberikan data teknikal LENGKAP dan REAL dari TradingView untuk saham IDX.
+Gunakan SEMUA data yang tersedia untuk analisis yang akurat dan komprehensif.
 
 1. MOMENTUM: Tentukan momentum saat ini (BULLISH/BEARISH/SIDEWAYS) berdasarkan:
-   - Pergerakan harga hari ini vs kemarin
-   - Volume trading (tinggi/rendah)
-   - Candlestick pattern terakhir
-   - RSI estimasi (overbought >70, oversold <30)
-   - MACD signal (bullish cross / bearish cross)
+   - RSI aktual (overbought >70, oversold <30) — data sudah tersedia, JANGAN estimasi
+   - MACD aktual (histogram positif/negatif, cross signal) — data sudah tersedia
+   - Posisi harga vs MA20 dan MA50
+   - Volume ratio vs rata-rata (>1.5x = volume tinggi, konfirmasi signal lebih kuat)
+   - Posisi harga di Bollinger Band (bb_position: 0%=lower band, 100%=upper band)
 
 2. SUPPORT & RESISTANCE:
-   - Resistance terdekat 1 (R1): level harga
-   - Resistance terdekat 2 (R2): level harga
-   - Support terdekat 1 (S1): level harga
-   - Support terdekat 2 (S2): level harga
-   - Pivot Point hari ini
+   - Gunakan high/low 1 bulan dan 52 minggu sebagai referensi utama
+   - Hitung pivot, R1, R2, S1, S2 dari data OHLC yang tersedia
+   - Bollinger Band upper/lower juga bisa jadi S/R dinamis
 
 3. SINYAL INTRADAY:
-   - Sinyal: BUY / SELL / WAIT
+   - Sinyal: BUY / SELL / WAIT berdasarkan kombinasi indikator
    - Entry price yang disarankan
-   - Target profit (TP)
-   - Stop loss (SL)
-   - Risk/Reward ratio
+   - Target profit (TP) dan Stop loss (SL) berdasarkan ATR atau S/R terdekat
+   - Risk/Reward ratio minimal 1:2
 
-4. RINGKASAN: Narasi singkat 2-3 kalimat tentang kondisi saham untuk trading hari ini.
+4. RINGKASAN: Narasi 2-3 kalimat berdasarkan data teknikal yang ada.
+
+PENTING: Data teknikal sudah tersedia lengkap. Jangan pernah menyebut "data terbatas" atau "estimasi RSI".
+Gunakan nilai aktual dari data yang diberikan.
 
 Respond HANYA dalam format JSON berikut tanpa markdown, tanpa backtick:
 {
@@ -55,6 +56,10 @@ Respond HANYA dalam format JSON berikut tanpa markdown, tanpa backtick:
 
 const POPULAR_STOCKS = ["BBCA", "BBRI", "TLKM", "ASII", "BMRI", "GOTO", "BYAN", "UNVR", "ICBP", "ADRO"];
 
+// Helper: format nilai indikator — tampilkan "N/A" kalau null
+const fmt = (val, decimals = 2) =>
+  val != null ? (typeof val === "number" ? val.toFixed(decimals) : val) : "N/A";
+
 export default function App() {
   const [ticker, setTicker] = useState("");
   const [loading, setLoading] = useState(false);
@@ -63,81 +68,137 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const inputRef = useRef(null);
 
-const analyze = async (code) => {
-  const stockCode = (code || ticker).toUpperCase().trim()
-  if (!stockCode) return
+  const analyze = async (code) => {
+    const stockCode = (code || ticker).toUpperCase().trim();
+    if (!stockCode) return;
 
-  setLoading(true)
-  setError(null)
-  setResult(null)
+    setLoading(true);
+    setError(null);
+    setResult(null);
 
-  try {
-    // Ambil data real dari Yahoo Finance
-    const stockRes = await fetch(`/stock/${stockCode}`)
-    const stockData = await stockRes.json()
-    const q = stockData.quote
+    try {
+      // ─── Fetch paralel: harga dasar + indikator teknikal ───────────────────
+      const [stockRes, enrichedRes] = await Promise.all([
+        fetch(`/stock/${stockCode}`),
+        fetch(`/enriched/${stockCode}`)
+      ]);
 
-    const prompt = `Analisis saham ${stockCode} (${q.longName || stockCode}) di IDX berdasarkan data real berikut:
-- Harga saat ini: ${q.regularMarketPrice}
-- Open: ${q.regularMarketOpen}
-- High hari ini: ${q.regularMarketDayHigh}
-- Low hari ini: ${q.regularMarketDayLow}
-- Volume: ${q.regularMarketVolume}
-- 52 week high: ${q.fiftyTwoWeekHigh}
-- 52 week low: ${q.fiftyTwoWeekLow}
-- Moving Average 50d: ${q.fiftyDayAverage}
-- Moving Average 200d: ${q.twoHundredDayAverage}
+      const stockData  = await stockRes.json();
+      const enriched   = await enrichedRes.json();
+      const q          = stockData.quote;
 
-Jawab HANYA dalam format JSON berikut, tanpa teks lain:
-{
-  "ticker": "${stockCode}",
-  "companyName": "${q.longName || stockCode}",
-  "lastPrice": ${q.regularMarketPrice},
-  "priceChange": "${q.regularMarketChange >= 0 ? '+' : ''}${q.regularMarketChange?.toFixed(0)}",
-  "priceChangePct": "${q.regularMarketChange >= 0 ? '+' : ''}${q.regularMarketChangePercent?.toFixed(2)}%",
-  "lastUpdated": "${new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}",
-  "momentum": "Bullish/Bearish/Sideways",
-  "rsi": "estimasi angka 0-100",
-  "macd": "Bullish/Bearish/Neutral",
-  "volume": "Tinggi/Normal/Rendah",
-  "signal": "Buy/Sell/Hold",
-  "entry": angka_harga,
-  "tp": angka_harga,
-  "sl": angka_harga,
-  "rrRatio": "1:2",
-  "r1": angka_harga,
-  "r2": angka_harga,
-  "s1": angka_harga,
-  "s2": angka_harga,
-  "pivot": angka_harga,
-  "summary": "ringkasan analisis dalam Bahasa Indonesia"
-}`
+      // ─── Cek apakah enriched berhasil ──────────────────────────────────────
+      const hasEnriched = enriched && !enriched.error;
 
-    // lanjut ke fetch Claude seperti biasa...
+      // ─── Volume interpretation ──────────────────────────────────────────────
+      let volumeLabel = "N/A";
+      if (hasEnriched && enriched.volume_ratio != null) {
+        volumeLabel = enriched.volume_ratio >= 1.5
+          ? `TINGGI (${enriched.volume_ratio}x rata-rata)`
+          : enriched.volume_ratio >= 0.8
+          ? `NORMAL (${enriched.volume_ratio}x rata-rata)`
+          : `RENDAH (${enriched.volume_ratio}x rata-rata)`;
+      }
 
-      const response = await fetch('/api/v1/messages', {
-    method: 'POST',
-    headers: {
-    'Content-Type': 'application/json',
-    // JANGAN kirim x-api-key di sini — sudah ditangani proxy
-    },
-    body: JSON.stringify({
-    model: 'claude-sonnet-4-5',
-    max_tokens: 1000,
-    messages: [{ role: 'user', content: prompt }],
-  }),
-})
-  const data = await response.json();
-// Tambahkan guard sebelum .filter() atau akses content
-if (!data.content) {
-  console.error('API error:', JSON.stringify(data.error))
-  return
-}
+      // ─── MACD interpretation ────────────────────────────────────────────────
+      let macdLabel = "N/A";
+      if (hasEnriched && enriched.macd != null && enriched.macd_signal != null) {
+        const hist = enriched.macd_hist;
+        macdLabel = hist > 0
+          ? `BULLISH (hist: +${fmt(hist)})`
+          : hist < 0
+          ? `BEARISH (hist: ${fmt(hist)})`
+          : "NEUTRAL";
+      }
 
+      // ─── Stochastic interpretation ──────────────────────────────────────────
+      let stochLabel = "N/A";
+      if (hasEnriched && enriched.stoch_k != null) {
+        const k = enriched.stoch_k;
+        stochLabel = k > 80
+          ? `OVERBOUGHT (K:${fmt(k, 1)})`
+          : k < 20
+          ? `OVERSOLD (K:${fmt(k, 1)})`
+          : `NEUTRAL (K:${fmt(k, 1)})`;
+      }
+
+      // ─── Bollinger Band interpretation ─────────────────────────────────────
+      let bbLabel = "N/A";
+      if (hasEnriched && enriched.bb_position != null) {
+        const pos = enriched.bb_position;
+        bbLabel = pos >= 80
+          ? `MENDEKATI UPPER BAND (${pos}%)`
+          : pos <= 20
+          ? `MENDEKATI LOWER BAND (${pos}%)`
+          : `TENGAH BAND (${pos}%)`;
+      }
+
+      // ─── MA trend ──────────────────────────────────────────────────────────
+      let maLabel = "N/A";
+      if (hasEnriched && enriched.ma_cross) {
+        const priceVsMa20 = enriched.close > enriched.sma20 ? "di atas" : "di bawah";
+        const priceVsMa50 = enriched.close > enriched.sma50 ? "di atas" : "di bawah";
+        maLabel = `SMA20: ${fmt(enriched.sma20, 0)} | SMA50: ${fmt(enriched.sma50, 0)} | Harga ${priceVsMa20} MA20 dan ${priceVsMa50} MA50 | Cross: ${enriched.ma_cross.toUpperCase()}`;
+      }
+
+      // ─── Susun prompt ke Claude ─────────────────────────────────────────────
+      const prompt = `Analisis saham ${stockCode} (${q.longName || stockCode}) di IDX berdasarkan data teknikal real berikut:
+
+=== DATA HARGA ===
+- Harga saat ini : ${q.regularMarketPrice}
+- Open hari ini  : ${hasEnriched ? fmt(enriched.open, 0) : "N/A"}
+- High hari ini  : ${hasEnriched ? fmt(enriched.high, 0) : "N/A"}
+- Low hari ini   : ${hasEnriched ? fmt(enriched.low, 0) : "N/A"}
+- Perubahan      : ${q.changePercent >= 0 ? "+" : ""}${fmt(q.changePercent)}%
+
+=== INDIKATOR TEKNIKAL ===
+- RSI (14)       : ${hasEnriched ? fmt(enriched.rsi, 1) : "N/A"}${enriched.rsi > 70 ? " ⚠ OVERBOUGHT" : enriched.rsi < 30 ? " ⚠ OVERSOLD" : ""}
+- MACD           : ${macdLabel}
+- Stochastic     : ${stochLabel}
+- Bollinger Band : ${bbLabel}  (Upper: ${fmt(enriched.bb_upper, 0)} | Lower: ${fmt(enriched.bb_lower, 0)} | Width: ${fmt(enriched.bb_width, 0)})
+- Moving Average : ${maLabel}
+- ATR            : ${hasEnriched ? fmt(enriched.atr, 0) : "N/A"} (volatilitas harian)
+
+=== VOLUME ===
+- Volume hari ini  : ${hasEnriched ? enriched.volume?.toLocaleString("id-ID") : "N/A"}
+- Rata-rata 30 hari: ${hasEnriched ? enriched.avg_volume_30d?.toLocaleString("id-ID") : "N/A"}
+- Rata-rata 10 hari: ${hasEnriched ? enriched.avg_volume_10d?.toLocaleString("id-ID") : "N/A"}
+- Volume ratio     : ${volumeLabel}
+
+=== RANGE REFERENSI ===
+- High 1 bulan   : ${hasEnriched ? fmt(enriched.high_1m, 0) : "N/A"}
+- Low 1 bulan    : ${hasEnriched ? fmt(enriched.low_1m, 0) : "N/A"}
+- High 52 minggu : ${hasEnriched ? fmt(enriched.high_52w, 0) : "N/A"}
+- Low 52 minggu  : ${hasEnriched ? fmt(enriched.low_52w, 0) : "N/A"}
+- Perubahan 1 bln: ${hasEnriched ? fmt(enriched.change_1m) : "N/A"}%
+- Perubahan 3 bln: ${hasEnriched ? fmt(enriched.change_3m) : "N/A"}%
+
+Semua data di atas adalah nilai AKTUAL dari TradingView. Gunakan data ini untuk analisis komprehensif.
+Jawab HANYA dalam format JSON yang diminta.`;
+
+      // ─── Kirim ke Claude ────────────────────────────────────────────────────
+      const response = await fetch("/api/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!data.content) {
+        console.error("API error:", JSON.stringify(data.error));
+        setError("API error: " + (data.error?.message || "Unknown error"));
+        return;
+      }
 
       const fullText = data.content
-        .filter(b => b.type === "text")
-        .map(b => b.text)
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
         .join("");
 
       const jsonMatch = fullText.match(/\{[\s\S]*\}/);
@@ -145,9 +206,14 @@ if (!data.content) {
 
       const parsed = JSON.parse(jsonMatch[0]);
       setResult(parsed);
-      setHistory(prev => [
-        { ticker: stockCode, time: new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }), signal: parsed.signal, momentum: parsed.momentum },
-        ...prev.slice(0, 4)
+      setHistory((prev) => [
+        {
+          ticker: stockCode,
+          time: new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+          signal: parsed.signal,
+          momentum: parsed.momentum,
+        },
+        ...prev.slice(0, 4),
       ]);
     } catch (e) {
       setError("Gagal menganalisis saham. Pastikan kode saham benar (contoh: BBCA, TLKM) dan API key sudah diset.");
@@ -158,8 +224,8 @@ if (!data.content) {
   };
 
   const momentumColor = (m) => m === "BULLISH" ? "#00ff88" : m === "BEARISH" ? "#ff4466" : "#ffcc00";
-  const signalColor = (s) => s === "BUY" ? "#00ff88" : s === "SELL" ? "#ff4466" : "#ffcc00";
-  const signalBg = (s) => s === "BUY" ? "rgba(0,255,136,0.1)" : s === "SELL" ? "rgba(255,68,102,0.1)" : "rgba(255,204,0,0.1)";
+  const signalColor   = (s) => s === "BUY"     ? "#00ff88" : s === "SELL"    ? "#ff4466" : "#ffcc00";
+  const signalBg      = (s) => s === "BUY"     ? "rgba(0,255,136,0.1)" : s === "SELL" ? "rgba(255,68,102,0.1)" : "rgba(255,204,0,0.1)";
 
   return (
     <div style={{
@@ -266,7 +332,7 @@ if (!data.content) {
             <div style={{ fontSize: "11px", color: "#00aaff", letterSpacing: "3px", animation: "blink 1s infinite" }}>
               ◈ MENGAMBIL DATA PASAR...
             </div>
-            <div style={{ marginTop: "12px", fontSize: "10px", color: "#2a4a5a" }}>Searching live market data · Calculating indicators · Identifying S/R levels</div>
+            <div style={{ marginTop: "12px", fontSize: "10px", color: "#2a4a5a" }}>Fetching live price · Loading RSI/MACD/MA · Calculating S/R levels</div>
           </div>
         )}
 
@@ -344,10 +410,10 @@ if (!data.content) {
                 </div>
                 <div style={{ marginTop: "12px", display: "grid", gap: "6px" }}>
                   {[
-                    { label: "ENTRY", value: `Rp ${result.entry?.toLocaleString("id-ID")}`, color: "#c8d8e8" },
-                    { label: "TARGET (TP)", value: `Rp ${result.tp?.toLocaleString("id-ID")}`, color: "#00ff88" },
-                    { label: "STOP LOSS", value: `Rp ${result.sl?.toLocaleString("id-ID")}`, color: "#ff4466" },
-                    { label: "R/R RATIO", value: result.rrRatio, color: "#ffcc00" },
+                    { label: "ENTRY",      value: `Rp ${result.entry?.toLocaleString("id-ID")}`, color: "#c8d8e8" },
+                    { label: "TARGET (TP)", value: `Rp ${result.tp?.toLocaleString("id-ID")}`,   color: "#00ff88" },
+                    { label: "STOP LOSS",  value: `Rp ${result.sl?.toLocaleString("id-ID")}`,    color: "#ff4466" },
+                    { label: "R/R RATIO",  value: result.rrRatio,                                 color: "#ffcc00" },
                   ].map(item => (
                     <div key={item.label} style={{ display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
                       <span style={{ color: "#4a6a7a" }}>{item.label}</span>
@@ -362,11 +428,11 @@ if (!data.content) {
             <div style={{ background: "rgba(0,0,0,0.4)", border: "1px solid rgba(0,170,255,0.2)", borderRadius: "8px", padding: "16px" }}>
               <div style={{ fontSize: "10px", color: "#4a6a7a", letterSpacing: "2px", marginBottom: "14px" }}>SUPPORT & RESISTANCE</div>
               {[
-                { label: "R2", value: result.r2, color: "#ff4466", bg: "rgba(255,68,102,0.15)" },
-                { label: "R1", value: result.r1, color: "#ff8866", bg: "rgba(255,136,102,0.1)" },
+                { label: "R2",    value: result.r2,    color: "#ff4466", bg: "rgba(255,68,102,0.15)" },
+                { label: "R1",    value: result.r1,    color: "#ff8866", bg: "rgba(255,136,102,0.1)" },
                 { label: "PIVOT", value: result.pivot, color: "#ffcc00", bg: "rgba(255,204,0,0.1)" },
-                { label: "S1", value: result.s1, color: "#88cc44", bg: "rgba(136,204,68,0.1)" },
-                { label: "S2", value: result.s2, color: "#00ff88", bg: "rgba(0,255,136,0.15)" },
+                { label: "S1",    value: result.s1,    color: "#88cc44", bg: "rgba(136,204,68,0.1)" },
+                { label: "S2",    value: result.s2,    color: "#00ff88", bg: "rgba(0,255,136,0.15)" },
               ].map(item => (
                 <div key={item.label} style={{
                   display: "flex", alignItems: "center", gap: "12px",
