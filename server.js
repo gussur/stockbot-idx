@@ -176,8 +176,6 @@ app.get('/enriched/:ticker', async (req, res) => {
           "BB.basis",                 // [21] Bollinger Band tengah (SMA20)
 
           // === Range & Perubahan ===
-          "change",                   // [22] Persentase perubahan hari ini
-          "change_1m",                // [23] Perubahan 1 bulan
           "change_3m",                // [24] Perubahan 3 bulan
           "High.1M",                  // [25] High tertinggi 1 bulan
           "Low.1M",                   // [26] Low terendah 1 bulan
@@ -262,12 +260,12 @@ app.get('/enriched/:ticker', async (req, res) => {
 
       // Range & Perubahan
       change_pct:     d[22],
-      change_1m:      d[23],
-      change_3m:      d[24],
-      high_1m:        d[25],
-      low_1m:         d[26],
-      high_52w:       d[27],
-      low_52w:        d[28],
+      high_1m:        d[23],
+      low_1m:         d[24],
+      high_52w:       d[25],
+      low_52w:        d[26],
+      change_1m:      null,
+      change_3m:      null,
     };
 
     // 3. Cache dan kirim
