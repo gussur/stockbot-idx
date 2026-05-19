@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import express from 'express'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -176,23 +177,59 @@ app.get('/enriched/:ticker', async (req, res) => {
           "BB.basis",                 // [21] Bollinger Band tengah (SMA20)
 
           // === Range & Perubahan ===
-          "change_3m",                // [24] Perubahan 3 bulan
-          "High.1M",                  // [25] High tertinggi 1 bulan
-          "Low.1M",                   // [26] Low terendah 1 bulan
-          "price_52_week_high",       // [27] High 52 minggu
-          "price_52_week_low",        // [28] Low 52 minggu
+          "change",                   // [22] Persentase perubahan hari ini
+          "High.1M",                  // [23] High tertinggi 1 bulan
+          "Low.1M",                   // [24] Low terendah 1 bulan
+          "price_52_week_high",       // [25] High 52 minggu
+          "price_52_week_low",        // [26] Low 52 minggu
         ]
       })
     });
 
     const tvData = await response.json();
 
-    // Ticker tidak ditemukan
+    // Ticker tidak ditemukan atau indikator tidak tersedia — fallback ke OHLCV saja
     if (!tvData.data || tvData.data.length === 0) {
-      return res.status(404).json({
-        error: `Saham ${rawTicker} tidak ditemukan di BEI`,
-        ticker: rawTicker
+      console.log(`⚠️ Indikator tidak tersedia untuk ${rawTicker}, fallback ke OHLCV.`);
+      const fallbackRes = await fetch('https://scanner.tradingview.com/indonesia/scan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        },
+        body: JSON.stringify({
+          symbols: { tickers: [symbol] },
+          columns: ["close", "open", "high", "low", "volume", "change"]
+        })
       });
+      const fallbackData = await fallbackRes.json();
+
+      if (!fallbackData.data || fallbackData.data.length === 0) {
+        return res.status(404).json({
+          error: `Saham ${rawTicker} tidak ditemukan di BEI`,
+          ticker: rawTicker
+        });
+      }
+
+      const f = fallbackData.data[0].d;
+      const fallbackEnriched = {
+        ticker: rawTicker,
+        timestamp: new Date().toISOString(),
+        _fallback: true,
+        close: f[0], open: f[1], high: f[2], low: f[3],
+        volume: f[4], change_pct: f[5],
+        avg_volume_30d: null, avg_volume_10d: null, volume_ratio: null,
+        sma20: null, sma50: null, ema20: null, ema50: null, ma_cross: null,
+        rsi: null, rsi_prev: null, stoch_k: null, stoch_d: null,
+        macd: null, macd_signal: null, macd_hist: null,
+        atr: null, bb_upper: null, bb_lower: null, bb_basis: null,
+        bb_width: null, bb_position: null,
+        high_1m: null, low_1m: null, high_52w: null, low_52w: null,
+        change_1m: null, change_3m: null,
+      };
+
+      cache.set(cacheKey, { timestamp: Date.now(), data: fallbackEnriched });
+      return res.json(fallbackEnriched);
     }
 
     const d = tvData.data[0].d;
