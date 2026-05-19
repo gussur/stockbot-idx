@@ -112,7 +112,180 @@ app.get('/stock/:ticker', async (req, res) => {
 })
 
 // ==========================================
-// 2. ENDPOINT AI (ANTHROPIC PROXY)
+// 2. ENDPOINT ENRICHED — INDIKATOR TEKNIKAL
+// (MA, RSI, MACD, Bollinger, ATR, Stochastic)
+// ==========================================
+app.get('/enriched/:ticker', async (req, res) => {
+  const rawTicker = req.params.ticker.toUpperCase();
+  const symbol = `IDX:${rawTicker}`;
+  const cacheKey = `ENRICHED:${rawTicker}`;
+  const ENRICHED_CACHE = 15 * 60 * 1000; // 15 menit — indikator tidak se-volatile harga
+
+  // 1. Cek Cache
+  if (cache.has(cacheKey)) {
+    const cached = cache.get(cacheKey);
+    if (Date.now() - cached.timestamp < ENRICHED_CACHE) {
+      console.log(`⚡ Mengambil enriched ${rawTicker} dari CACHE.`);
+      return res.json(cached.data);
+    }
+  }
+
+  try {
+    console.log(`📊 Mengambil indikator teknikal ${rawTicker} dari TRADINGVIEW.`);
+
+    const response = await fetch('https://scanner.tradingview.com/indonesia/scan', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Referer': 'https://www.tradingview.com/'
+      },
+      body: JSON.stringify({
+        symbols: { tickers: [symbol] },
+        columns: [
+          // === Harga & Volume ===
+          "close",                    // [0]  Harga terakhir
+          "open",                     // [1]  Open hari ini
+          "high",                     // [2]  High hari ini
+          "low",                      // [3]  Low hari ini
+          "volume",                   // [4]  Volume hari ini
+          "average_volume",           // [5]  Rata-rata volume (30 hari)
+          "average_volume_10d_calc",  // [6]  Rata-rata volume (10 hari)
+
+          // === Moving Average ===
+          "SMA20",                    // [7]  Simple MA 20
+          "SMA50",                    // [8]  Simple MA 50
+          "EMA20",                    // [9]  Exponential MA 20
+          "EMA50",                    // [10] Exponential MA 50
+
+          // === Momentum ===
+          "RSI",                      // [11] RSI 14
+          "RSI[1]",                   // [12] RSI candle sebelumnya (untuk deteksi arah)
+          "Stoch.K",                  // [13] Stochastic K
+          "Stoch.D",                  // [14] Stochastic D
+
+          // === Trend ===
+          "MACD.macd",                // [15] MACD line
+          "MACD.signal",              // [16] Signal line
+          "MACD.hist",                // [17] Histogram MACD
+
+          // === Volatilitas ===
+          "ATR",                      // [18] Average True Range
+          "BB.upper",                 // [19] Bollinger Band atas
+          "BB.lower",                 // [20] Bollinger Band bawah
+          "BB.basis",                 // [21] Bollinger Band tengah (SMA20)
+
+          // === Range & Perubahan ===
+          "change",                   // [22] Persentase perubahan hari ini
+          "change_1m",                // [23] Perubahan 1 bulan
+          "change_3m",                // [24] Perubahan 3 bulan
+          "High.1M",                  // [25] High tertinggi 1 bulan
+          "Low.1M",                   // [26] Low terendah 1 bulan
+          "price_52_week_high",       // [27] High 52 minggu
+          "price_52_week_low",        // [28] Low 52 minggu
+        ]
+      })
+    });
+
+    const tvData = await response.json();
+
+    // Ticker tidak ditemukan
+    if (!tvData.data || tvData.data.length === 0) {
+      return res.status(404).json({
+        error: `Saham ${rawTicker} tidak ditemukan di BEI`,
+        ticker: rawTicker
+      });
+    }
+
+    const d = tvData.data[0].d;
+
+    // Bantu frontend: flag apakah volume hari ini di atas rata-rata
+    const volumeRatio = (d[4] != null && d[5] != null && d[5] > 0)
+      ? parseFloat((d[4] / d[5]).toFixed(2))
+      : null;
+
+    // Bantu AI: posisi harga relatif terhadap Bollinger Band
+    const bbWidth = (d[19] != null && d[20] != null)
+      ? parseFloat((d[19] - d[20]).toFixed(0))
+      : null;
+    const bbPosition = (d[0] != null && d[19] != null && d[20] != null && bbWidth > 0)
+      ? parseFloat(((d[0] - d[20]) / bbWidth * 100).toFixed(1))  // 0% = lower, 100% = upper
+      : null;
+
+    // Sinyal MA silang sederhana (golden/death cross proxy)
+    let maCross = null;
+    if (d[7] != null && d[8] != null) {
+      maCross = d[7] > d[8] ? 'bullish' : d[7] < d[8] ? 'bearish' : 'neutral';
+    }
+
+    const enriched = {
+      ticker: rawTicker,
+      timestamp: new Date().toISOString(),
+
+      // Harga
+      close:          d[0],
+      open:           d[1],
+      high:           d[2],
+      low:            d[3],
+
+      // Volume
+      volume:           d[4],
+      avg_volume_30d:   d[5],
+      avg_volume_10d:   d[6],
+      volume_ratio:     volumeRatio,  // > 1.5 = volume tinggi, signal lebih kuat
+
+      // Moving Average
+      sma20:  d[7],
+      sma50:  d[8],
+      ema20:  d[9],
+      ema50:  d[10],
+      ma_cross: maCross,              // 'bullish' | 'bearish' | 'neutral' | null
+
+      // Momentum
+      rsi:          d[11],
+      rsi_prev:     d[12],
+      stoch_k:      d[13],
+      stoch_d:      d[14],
+
+      // Trend
+      macd:         d[15],
+      macd_signal:  d[16],
+      macd_hist:    d[17],
+
+      // Volatilitas
+      atr:          d[18],
+      bb_upper:     d[19],
+      bb_lower:     d[20],
+      bb_basis:     d[21],
+      bb_width:     bbWidth,
+      bb_position:  bbPosition,       // Persentase posisi harga di dalam BB
+
+      // Range & Perubahan
+      change_pct:     d[22],
+      change_1m:      d[23],
+      change_3m:      d[24],
+      high_1m:        d[25],
+      low_1m:         d[26],
+      high_52w:       d[27],
+      low_52w:        d[28],
+    };
+
+    // 3. Cache dan kirim
+    cache.set(cacheKey, { timestamp: Date.now(), data: enriched });
+    res.json(enriched);
+
+  } catch (e) {
+    console.error(`Error enriched ${rawTicker}:`, e.message);
+    res.status(500).json({
+      error: 'Gagal mengambil indikator teknikal.',
+      detail: e.message,
+      ticker: rawTicker
+    });
+  }
+})
+
+// ==========================================
+// 3. ENDPOINT AI (ANTHROPIC PROXY)
 // ==========================================
 app.post('/api/v1/messages', async (req, res) => {
   try {
